@@ -10,55 +10,13 @@
 
 using namespace std;
 
-void set_func (istringstream *parser, map<string, string> &data, HANDLE pipe);
-void get_func (istringstream *parser, map<string, string> data, HANDLE pipe);
-void help_func (HANDLE pipe);
+int set_func (HANDLE pipe, map<string, string> &data, istringstream *parser);
+int get_func (HANDLE pipe, map<string, string> data, istringstream *parser);
+int help_func (HANDLE pipe);
+int list_func(HANDLE pipe, map<string, string> data);
+int delete_func(HANDLE pipe, map<string, string> &data, istringstream *parser);
 
 int main() {
-
-    // Вар1. Обмен сообщениями через разделяемую память
-
-//    char fpName[256];
-//
-//    HANDLE file_map = CreateFileMappingA(
-//            INVALID_HANDLE_VALUE,           // используется часть системного файла подкачки
-//            NULL,                           // отсутствие особых атрибутов безопасности
-//            PAGE_READWRITE,                 // доступ к области памяти для чтения и записи
-//            0,                              // максимальный размер области (страшее DWORD)
-//            BUF_SIZE1,                      // максимальный размер области (младшее DWORD)
-//            fpName);
-//
-//    if (file_map == NULL)
-//    {
-//        printf("CreateFileMapping Error: %d\n", GetLastError());
-//        return 1;
-//    }
-//
-//    LPVOID memory = MapViewOfFile(file_map,             // дескриптор файлового отображения
-//                                  FILE_MAP_ALL_ACCESS,  // полный доступ к участку памяти
-//                                  0,
-//                                  0,
-//                                  BUF_SIZE1);
-//
-//    if (memory == NULL)
-//    {
-//        printf("MapViewOfFile Error: %d\n", GetLastError());
-//        CloseHandle(file_map);
-//        return 1;
-//    }
-//
-//    char* message = (char*) memory;
-//
-//    char input[128];
-//    fgets(input, sizeof(input), stdin);
-//    strcpy(message, input);
-//
-//    printf("Message from shared memory: %s\n", message);
-//
-//    UnmapViewOfFile(memory);
-//    CloseHandle(file_map);
-
-    // Вар2. Хранилище значений по ключу с доступом через именованные каналы
     BOOL fConnected = FALSE;
     map<string, string> data;
 
@@ -91,7 +49,9 @@ int main() {
         keywords_int["set"] = 1;
         keywords_int["get"] = 2;
         keywords_int["help"] = 3;
-        keywords_int["quit"] = 4;
+        keywords_int["list"] = 4;
+        keywords_int["delete"] = 5;
+        keywords_int["quit"] = 6;
 
         printf("Waiting for a client... ");
 
@@ -109,7 +69,17 @@ int main() {
                 // чтение команды
                 printf("Waiting for command... ");
                 string command(64, '\0');
-                ReadFile(pipe, &command[0], command.size(), NULL, NULL);
+
+                if (!ReadFile(pipe, &command[0], command.size(), NULL, NULL))
+                {
+                    auto readError = GetLastError();
+                    if (readError != ERROR_IO_PENDING)
+                    {
+                        printf("ReadFile Error: %d\n", readError);
+                        CloseHandle(pipe);
+                        return -3;
+                    }
+                }
 
                 if (command[0] != '\0')
                     printf("received.\n");
@@ -124,25 +94,72 @@ int main() {
                 switch (keywords_int[keyword.c_str()])
                 {
                     case 1:
-                        set_func(&parser, data, pipe);
+                        if (!set_func(pipe, data, &parser))
+                        {
+                            printf("Set_func Error!\n");
+                            CloseHandle(pipe);
+                            return -2;
+                        }
                         break;
 
                     case 2:
-                        get_func(&parser, data, pipe);
+                        if (!get_func(pipe, data, &parser))
+                        {
+                            printf("Get_func Error!\n");
+                            CloseHandle(pipe);
+                            return -2;
+                        }
                         break;
 
                     case 3:
-                        help_func(pipe);
+                        if (!help_func(pipe))
+                        {
+                            printf("Help_func Error!\n");
+                            CloseHandle(pipe);
+                            return -2;
+                        }
                         break;
 
                     case 4:
-                        DisconnectNamedPipe(pipe);
+                        if (!list_func(pipe, data))
+                        {
+                            printf("List_func Error!\n");
+                            CloseHandle(pipe);
+                            return -2;
+                        }
+                        break;
+
+                    case 5:
+                        if (!delete_func(pipe, data, &parser))
+                        {
+                            printf("Delete_func Error!\n");
+                            CloseHandle(pipe);
+                            return -2;
+                        }
+                        break;
+
+                    case 6:
+                        if (!DisconnectNamedPipe(pipe))
+                        {
+                            printf("DisconnectNamedPipe Error: %d\n", GetLastError());
+                            CloseHandle(pipe);
+                            return -4;
+                        }
                         quit_flag = FALSE;
                         break;
 
                     default:
                         char response[] = "No such command! Try again!\n";
-                        WriteFile(pipe, response, strlen(response), NULL, NULL);
+                        if (!WriteFile(pipe, response, strlen(response), NULL, NULL))
+                        {
+                            auto writeError = GetLastError();
+                            if (writeError != ERROR_IO_PENDING)
+                            {
+                                printf("WriteFile Error: %d", writeError);
+                                CloseHandle(pipe);
+                                return -2;
+                            }
+                        }
                         break;
                 }
             }
@@ -178,7 +195,7 @@ int main() {
 }
 
 // функция для команды set
-void set_func (istringstream *parser, map<string, string> &data, HANDLE pipe)
+int set_func (HANDLE pipe, map<string, string> &data, istringstream *parser)
 {
     string name;
     string value;
@@ -187,11 +204,20 @@ void set_func (istringstream *parser, map<string, string> &data, HANDLE pipe)
     data[name] = value;
 
     string response = "acknowledged\n";
-    WriteFile(pipe, response.c_str(), response.size(), NULL, NULL);
+    if (!WriteFile(pipe, response.c_str(), response.size(), NULL, NULL))
+    {
+        auto writeError = GetLastError();
+        if (writeError != ERROR_IO_PENDING)
+        {
+            printf("WriteFile Error: %d", writeError);
+            return 0;
+        }
+    }
+    return 1;
 }
 
 // функция для команды get
-void get_func (istringstream *parser, map<string, string> data, HANDLE pipe)
+int get_func (HANDLE pipe, map<string, string> data, istringstream *parser)
 {
     string get_param;
     *parser >> get_param;
@@ -214,30 +240,107 @@ void get_func (istringstream *parser, map<string, string> data, HANDLE pipe)
     }
     else if (data.find(get_param.c_str()) != data.end())
     {
-        strcat(response, "Response: ");
-        strcat(response, get_param.c_str());
-        strcat(response, " ");
+        strcat(response, "found: ");
         strcat(response, data[get_param.c_str()].c_str());
         strcat(response, "\n");
     }
     else
     {
-        strcat(response, "No such key!\n");
+        strcat(response, "missing\n");
     }
 
-    WriteFile(pipe, response, strlen(response), NULL, NULL);
+    if (!WriteFile(pipe, response, strlen(response), NULL, NULL))
+    {
+        auto writeError = GetLastError();
+        if (writeError != ERROR_IO_PENDING)
+        {
+            printf("WriteFile Error: %d", writeError);
+            return 0;
+        }
+    }
+    return 1;
 }
 
 // функция для команды help
-void help_func(HANDLE pipe)
+int help_func(HANDLE pipe)
 {
-    char response[] = "There are 4 commands:\n"
+    string response = "There are 4 commands:\n"
                       "set <key> <value> - add one note to the map with key <key> and value <value>;\n"
                       "get [param] - you can choose one of 2 parameters: 'all' or <key>;\n"
                       "  'all' will return the whole map which was created during current work session;\n"
                       "  <key> if such key exists in the map, key and value will be returned, otherwise 'No such key!' phrase;\n"
+                      "list - will return the list of all keys from the current map;\n"
+                      "delete <key> - will delete the pair of <key> and it's value from the current map;\n"
                       "help - will return this message;\n"
                       "quit - stop the current client session (server can still work, so the map will be save, until server turned off).\n";
 
-    WriteFile(pipe, response, strlen(response), NULL, NULL);
+    if (!WriteFile(pipe, response.c_str(), response.size(), NULL, NULL))
+    {
+        auto writeError = GetLastError();
+        if (writeError != ERROR_IO_PENDING)
+        {
+            printf("WriteFile Error: %d", writeError);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// функция для команды list
+int list_func(HANDLE pipe, map<string, string> data)
+{
+    string allList = "";
+
+    for (auto item : data)
+    {
+        allList += item.first + ", ";
+    }
+    if (allList.length() == 0)
+        allList = "There is no any records now!\n";
+    else
+    {
+        allList[allList.length() - 2] = '\n';
+        allList[allList.length() - 1] = '\0';
+    }
+    if (!WriteFile(pipe, allList.c_str(), allList.size(), NULL, NULL))
+    {
+        auto writeError = GetLastError();
+        if (writeError != ERROR_IO_PENDING)
+        {
+            printf("WriteFile Error: %d", writeError);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int delete_func(HANDLE pipe, map<string, string> &data, istringstream *parser)
+{
+    string key;
+    *parser >> key;
+
+    char response[256] = "\0";
+    auto delKeyIt = data.find(key.c_str());
+
+    if (delKeyIt == data.end())
+        strcat(response, "missing\n");
+    else
+    {
+        strcat(response, key.c_str());
+        strcat(response, "-");
+        strcat(response, data[key.c_str()].c_str());
+        strcat(response, " deleted\n");
+        data.erase(delKeyIt);
+    }
+
+    if (!WriteFile(pipe, response, strlen(response), NULL, NULL))
+    {
+        auto writeError = GetLastError();
+        if (writeError != ERROR_IO_PENDING)
+        {
+            printf("WriteFile Error: %d", writeError);
+            return 0;
+        }
+    }
+    return 1;
 }
